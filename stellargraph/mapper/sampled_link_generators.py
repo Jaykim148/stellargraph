@@ -130,33 +130,30 @@ class BatchedLinkGenerator(Generator):
         # Otherwise pass iterable (check?) to standard LinkSequence
         elif isinstance(link_ids, collections.abc.Iterable):
             # Check all IDs are actually in the graph and are of expected type
-            for link in link_ids:
-                if len(link) != 2:
-                    raise KeyError("Expected link IDs to be a tuple of length 2")
+            if pd.DataFrame.from_records(link_ids).shape[1] != 2:
+                raise KeyError("Expected link IDs to be a tuple of length 2")
 
-                src, dst = link
-                try:
-                    node_type_src = self.graph.node_type(src)
-                except KeyError:
-                    raise KeyError(
-                        f"Node ID {src} supplied to generator not found in graph"
-                    )
-                try:
-                    node_type_dst = self.graph.node_type(dst)
-                except KeyError:
-                    raise KeyError(
-                        f"Node ID {dst} supplied to generator not found in graph"
-                    )
+            source_ids = self.graph.node_ids_to_ilocs([i[0] for i in link_ids])
+            try:
+                source_types = set(self.graph.node_type(source_ids, use_ilocs=True))
+            except KeyError:
+                raise KeyError('source include not found nodes in graph')
 
-                if self.head_node_types is not None and (
-                    node_type_src != expected_src_type
-                    or node_type_dst != expected_dst_type
-                ):
-                    raise ValueError(
-                        f"Node pair ({src}, {dst}) not of expected type ({expected_src_type}, {expected_dst_type})"
-                    )
+            target_ids = self.graph.node_ids_to_ilocs([i[1] for i in link_ids])
+            try:
+                target_types = set(self.graph.node_type(target_ids, use_ilocs=True))
+            except KeyError:
+                raise KeyError('source include not found nodes in graph')
 
-            link_ids = [self.graph.node_ids_to_ilocs(ids) for ids in link_ids]
+            if self.head_node_types is not None:
+                if len(source_types) != 1:
+                    unexpected_types = list(source_types - set([expected_src_type]))
+                    raise ValueError(f'Source contains unexpected types, such as {unexpected_types}')
+                if len(target_types) != 1:
+                    unexpected_types = list(target_types - set([expected_dst_type]))
+                    raise ValueError(f'Target contains unexpected types, such as {unexpected_types}')
+
+            link_ids = [np.array([x, y]) for x, y in zip(source_ids, target_ids)]
 
             return LinkSequence(
                 self.sample_features,
@@ -461,25 +458,21 @@ class HinSAGELinkGenerator(BatchedLinkGenerator):
 
             # Get sampled nodes for the subgraphs starting from the (src, dst) head nodes
             # nodes_samples is list of two lists: [[samples for src], [samples for dst]]
+
             node_samples = self.sampler.run(
                 nodes=head_nodes, n=1, n_size=self.num_samples
             )
 
             # Reshape node samples to the required format for the HinSAGE model
             # This requires grouping the sampled nodes by edge type and in order
-            nodes_by_type.append(
-                [
-                    (
-                        nt,
-                        reduce(
-                            operator.concat,
-                            (samples[ks] for samples in node_samples for ks in indices),
-                            [],
-                        ),
-                    )
-                    for nt, indices in self._sampling_schema[ii]
-                ]
-            )
+            nodes_by_nt = []
+            for nt, indices in self._sampling_schema[ii]:
+                _samples = []
+                for samples in node_samples:
+                    for ks in indices:
+                        _samples += samples[ks]
+                nodes_by_nt.append((nt, _samples))
+            nodes_by_type.append(nodes_by_nt)
 
         # Interlace the two lists, nodes_by_type[0] (for src head nodes) and nodes_by_type[1] (for dst head nodes)
         nodes_by_type = [
