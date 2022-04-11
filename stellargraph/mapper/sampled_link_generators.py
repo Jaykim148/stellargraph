@@ -30,6 +30,7 @@ __all__ = [
 import random
 import operator
 import numpy as np
+import pandas as pd
 import itertools as it
 import operator
 import collections
